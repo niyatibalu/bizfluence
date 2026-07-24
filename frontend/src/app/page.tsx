@@ -134,7 +134,10 @@ export default function LandingPage() {
         <div className="relative z-10 mx-auto flex w-full max-w-6xl flex-1 flex-col justify-center px-4 py-16 sm:px-8 sm:py-20">
           <Wordmark className="max-w-full text-[clamp(2.75rem,7.2vw,5.75rem)] text-[var(--ink)]" />
           <p className="mt-5 max-w-xl text-base text-[var(--ink)]/70 sm:text-lg">
-            Brand deals without a manager on payroll. Find fit. Pitch. Decide.
+            Everything a manager does, minus the manager.
+          </p>
+          <p className="mt-2 max-w-xl text-base font-medium text-[var(--ink)]/85 sm:text-lg">
+            Find fit. Pitch. Decide.
           </p>
           <div className={`heat-line mt-7 ${heroReady ? "is-ready" : ""}`} />
           <a
