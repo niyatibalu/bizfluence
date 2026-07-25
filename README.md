@@ -147,6 +147,8 @@ App: http://localhost:3000
 5. Deploy. Copy the service URL (e.g. `https://bizfluence-api.onrender.com`).  
 6. Free Postgres expires after **30 days** unless you upgrade.
 
+**If the Blueprint sync or build fails:** Render only allows one free Postgres per account — delete any unused free DB, then sync again. Also confirm the service uses Python **3.11** (`runtime.txt` + `PYTHON_VERSION`). Check **bizfluence-api → Logs → Build** for the real pip error.
+
 ### Wire the frontend to the API
 
 1. [Vercel project](https://vercel.com/niyati2/bizfluence) → **Settings** → **Environment Variables**.  
