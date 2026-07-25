@@ -1,14 +1,21 @@
+# Render Blueprint — https://dashboard.render.com/blueprints
 services:
   - type: web
     name: bizfluence-api
     runtime: python
+    plan: free
     rootDir: backend
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
     envVars:
       - key: DATABASE_URL
-        sync: false
+        fromDatabase:
+          name: bizfluence-db
+          property: connectionString
       - key: GEMINI_API_KEY
+        sync: false
+      - key: HUNTER_API_KEY
         sync: false
       - key: RESEND_API_KEY
         sync: false
@@ -17,4 +24,10 @@ services:
       - key: CORS_ORIGINS
         sync: false
       - key: SEED_ON_STARTUP
-        value: "true"
+        value: "false"
+
+databases:
+  - name: bizfluence-db
+    plan: free
+    databaseName: bizfluence
+    user: bizfluence

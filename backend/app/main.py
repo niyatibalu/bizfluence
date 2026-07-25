@@ -28,3 +28,8 @@ app.include_router(offers.router, prefix="/api")
 def on_startup():
     Base.metadata.create_all(bind=engine)
     ensure_schema()
+
+
+@app.get("/health")
+def health():
+    return {"ok": True, "app": settings.app_name}
