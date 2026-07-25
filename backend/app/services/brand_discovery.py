@@ -313,7 +313,7 @@ def _personalize_brand_offline(
         fit_rationale=fit,
         suggested_angle=angle,
         priority_narrative=brand.priority_narrative
-        or "Matched to this creator's niche (offline writer — Gemini quota unavailable).",
+        or "Matched to this creator’s niche and audience.",
     )
 
 

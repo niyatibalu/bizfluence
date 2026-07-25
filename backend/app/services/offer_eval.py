@@ -113,8 +113,7 @@ def evaluate_offer(profile: CreatorProfile | None, offer: Offer, company: Compan
             "talking_points": talking,
             "reply_draft": reply,
             "generation_note": (
-                "Gemini quota/unavailable — used Bizfluence offline brief "
-                "(plain English; profile bio not pasted)."
+                "Brief based on the offer text and your profile — adjust anything that feels off."
             ),
         }
 

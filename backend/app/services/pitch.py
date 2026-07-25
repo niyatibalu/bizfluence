@@ -112,8 +112,7 @@ def generate_pitch_pack(
             email_body=fallback["email_body"],
             subject_alternatives=list(fallback["subject_alternatives"]),
             generation_note=(
-                "Gemini quota/unavailable — used Bizfluence offline writer "
-                "(full sentences; profile bio is context only, never pasted)."
+                "Drafted from your profile and this brand — tweak anything that doesn’t sound like you."
             ),
         )
 
@@ -146,7 +145,9 @@ def generate_pitch_pack(
         email_body=email,
         subject_alternatives=alts,
         generation_note=(
-            "Gemini output looked off — used offline writer instead." if forced_offline else ""
+            "Drafted from your profile and this brand — tweak anything that doesn’t sound like you."
+            if forced_offline
+            else ""
         ),
     )
 
