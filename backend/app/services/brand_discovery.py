@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from app.models import CreatorProfile
 from app.schemas import SuggestedBrand
 from app.services.llm import generate_json
@@ -281,12 +283,20 @@ def _personalize_brand_offline(
     if handle:
         who += f" (@{handle})"
 
+    # Prefer content themes from research when present
+    themes = []
+    if creator_ctx:
+        m = re.search(r"Content themes from titles:\s*([^\n.]+)", creator_ctx, re.I)
+        if m:
+            themes = [t.strip() for t in m.group(1).split(",") if t.strip()][:3]
+    theme_bit = f" (especially {' / '.join(themes)})" if themes else ""
+
     base = (brand.fit_rationale or "").strip()
     # Keep the brand's category fact, then attach creator-specific why
     fit = (
-        f"{brand.name} fits {who}: {base}"
+        f"{brand.name} fits {who}{theme_bit}: {base}"
         if base and "creator" not in base.lower()[:40]
-        else f"{brand.name} is a relevant India {brand.category or 'consumer'} brand for {who}."
+        else f"{brand.name} is a relevant India {brand.category or 'consumer'} brand for {who}{theme_bit}."
     )
     # Avoid runaway length
     if len(fit) > 280:

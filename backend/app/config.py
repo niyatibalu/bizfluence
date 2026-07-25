@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     database_url: str = "sqlite:///./bizfluence.db"
     cors_origins: str = "http://localhost:3000,https://bizfluence.vercel.app"
     gemini_api_key: str = ""
+    hunter_api_key: str = ""
     resend_api_key: str = ""
     resend_from_email: str = "Bizfluence <onboarding@resend.dev>"
     seed_on_startup: bool = False

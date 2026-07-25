@@ -61,6 +61,12 @@ export type Contact = {
   notes: string;
 };
 
+export type ContactFindResult = {
+  contacts: Contact[];
+  message: string;
+  source: string;
+};
+
 export type PitchPack = {
   linkedin_dm: string;
   email_subject: string;

@@ -7,6 +7,7 @@ import {
   api,
   Company,
   Contact,
+  ContactFindResult,
   getStoredUser,
   OutreachMessage,
   PitchPack,
@@ -71,7 +72,8 @@ export default function CompanyWorkspacePage() {
         title: cTitle,
         linkedin_url: cLinkedIn,
         email,
-        email_confidence: confidence,
+        email_confidence: confidence || (email ? "manual" : ""),
+        notes: "Added manually.",
       });
       setCName("");
       setCLinkedIn("");
@@ -127,19 +129,26 @@ export default function CompanyWorkspacePage() {
 
   async function findContacts() {
     setBusy("find");
-    setToast("Looking for marketing contacts… this can take a bit.");
+    setToast("Looking for people to pitch…");
     try {
-      const { data } = await api.post<Contact[]>(`/companies/${companyId}/contacts/find`);
+      const { data } = await api.post<ContactFindResult>(`/companies/${companyId}/contacts/find`);
       await load();
-      setToast(
-        data.length
-          ? `Found ${data.length} possible contact(s). Verify LinkedIn/email before sending.`
-          : "No clear public contacts found — add one manually for now."
-      );
+      setToast(data.message || (data.contacts.length ? `Found ${data.contacts.length}.` : "No contacts found."));
     } catch {
       setToast("Contact search failed.");
     } finally {
       setBusy("");
+    }
+  }
+
+  async function removeContact(id: number) {
+    try {
+      await api.delete(`/contacts/${id}`);
+      if (selectedContact === id) setSelectedContact(null);
+      await load();
+      setToast("Contact removed.");
+    } catch {
+      setToast("Could not remove contact.");
     }
   }
 
@@ -261,21 +270,54 @@ export default function CompanyWorkspacePage() {
         </button>
         <ul className="space-y-2">
           {contacts.map((c) => (
-            <li key={c.id}>
-              <button
-                type="button"
+            <li key={c.id} className="flex gap-2">
+              <div
+                role="button"
+                tabIndex={0}
                 onClick={() => setSelectedContact(c.id)}
-                className={`w-full rounded-xl border px-3 py-2 text-left text-sm transition ${
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    setSelectedContact(c.id);
+                  }
+                }}
+                className={`min-w-0 flex-1 cursor-pointer rounded-xl border px-3 py-2 text-left text-sm transition ${
                   selectedContact === c.id
                     ? "border-[var(--teal)] bg-[var(--mist)]"
                     : "border-[var(--line)] bg-white/50"
                 }`}
               >
                 <span className="font-semibold">{c.name}</span> — {c.title}
-                {c.email && <span className="block text-[var(--ink)]/55">{c.email} ({c.email_confidence || "manual"})</span>}
-                {c.linkedin_url && (
-                  <span className="block truncate text-[var(--teal)]">{c.linkedin_url}</span>
+                {c.email && (
+                  <a
+                    href={`mailto:${c.email}`}
+                    className="block truncate text-[var(--ink)]/55 hover:underline"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    {c.email}
+                    {c.email_confidence ? ` (${c.email_confidence})` : ""}
+                  </a>
                 )}
+                {c.linkedin_url && (
+                  <a
+                    href={c.linkedin_url.startsWith("http") ? c.linkedin_url : `https://${c.linkedin_url}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="mt-0.5 block truncate text-[var(--teal)] underline-offset-2 hover:underline"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    {c.linkedin_url}
+                  </a>
+                )}
+                {c.notes && <span className="mt-1 block text-xs text-[var(--ink)]/45">{c.notes}</span>}
+              </div>
+              <button
+                type="button"
+                className="btn-ghost shrink-0 self-start px-2 text-xs"
+                onClick={() => removeContact(c.id)}
+                aria-label={`Remove ${c.name}`}
+              >
+                Remove
               </button>
             </li>
           ))}

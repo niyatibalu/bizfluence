@@ -4,7 +4,13 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.deps import get_current_user
 from app.models import Company, Contact, User
-from app.schemas import ContactCreate, ContactOut, EmailGuessOut, EmailGuessRequest
+from app.schemas import (
+    ContactCreate,
+    ContactFindResult,
+    ContactOut,
+    EmailGuessOut,
+    EmailGuessRequest,
+)
 from app.services.contact_find import find_marketing_contacts
 from app.services.email_guess import guess_corporate_email
 
@@ -36,37 +42,89 @@ def create_contact(
     db: Session = Depends(get_db),
 ):
     _company_for_user(db, user, company_id)
-    contact = Contact(company_id=company_id, **payload.model_dump())
+    data = payload.model_dump()
+    if not (data.get("notes") or "").strip():
+        data["notes"] = "Added manually."
+    if not (data.get("email_confidence") or "").strip() and data.get("email"):
+        data["email_confidence"] = "manual"
+    contact = Contact(company_id=company_id, **data)
     db.add(contact)
     db.commit()
     db.refresh(contact)
     return contact
 
 
-@router.post("/companies/{company_id}/contacts/find", response_model=list[ContactOut])
+@router.post("/companies/{company_id}/contacts/find", response_model=ContactFindResult)
 def find_and_save_contacts(
     company_id: int,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Best-effort public web search for marketing contacts + email guess. Verify before sending."""
+    """Hunter Domain Search. Clears previous auto-found contacts so stale junk doesn't linger."""
     company = _company_for_user(db, user, company_id)
-    found = find_marketing_contacts(company)
+    found, source, message = find_marketing_contacts(company)
+
+    # Drop prior auto-discovered rows; keep contacts explicitly added by the user
+    existing = db.query(Contact).filter(Contact.company_id == company_id).all()
+    for c in existing:
+        if _is_auto_contact(c):
+            db.delete(c)
+    db.flush()
+
     saved: list[Contact] = []
-    existing_names = {
-        c.name.lower() for c in db.query(Contact).filter(Contact.company_id == company_id).all()
-    }
+    seen_emails: set[str] = set()
+    seen_names: set[str] = set()
     for row in found:
-        if row["name"].lower() in existing_names:
+        name_l = row["name"].lower()
+        email_l = (row.get("email") or "").lower()
+        if name_l in seen_names:
+            continue
+        if email_l and email_l in seen_emails:
             continue
         contact = Contact(company_id=company_id, **row)
         db.add(contact)
         saved.append(contact)
-        existing_names.add(row["name"].lower())
+        seen_names.add(name_l)
+        if email_l:
+            seen_emails.add(email_l)
     db.commit()
     for c in saved:
         db.refresh(c)
-    return saved
+
+    return ContactFindResult(contacts=saved, message=message, source=source)
+
+
+def _is_auto_contact(c: Contact) -> bool:
+    notes = (c.notes or "").strip()
+    notes_l = notes.lower()
+    if notes_l.startswith("added manually"):
+        return False
+    conf = (c.email_confidence or "").lower()
+    if conf == "manual":
+        return False
+
+    markers = (
+        "found via hunter",
+        "hunter ·",
+        "hunter only found",
+        "found via public web",
+        "parsed from linkedin",
+        "hunter unavailable",
+        "verify before outreach",
+        "brand inbox",
+        "no named marketing",
+    )
+    if any(m in notes_l for m in markers):
+        return True
+
+    # Legacy web-search junk: guessed/high confidence without a manual note
+    if conf in {"guessed", "hunter", "generic"}:
+        return True
+    if conf in {"high", "medium", "low"} and not notes:
+        return True
+    if not notes and conf:
+        return True
+    return False
 
 
 @router.delete("/contacts/{contact_id}")

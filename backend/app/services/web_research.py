@@ -43,7 +43,7 @@ def research_creator(profile: CreatorProfile | None, force: bool = False) -> str
 
     Never open-web search by display name or niche alone — that confused similar
     names (e.g. Nayna/Nayra vs "Naina AI"). Scope = Instagram / YouTube / LinkedIn /
-    other_links the user entered, plus page fetches for those URLs.
+    other_links the user entered, plus deep fetches (YouTube RSS, page meta, link-in-bio).
     """
     if profile is None:
         return ""
@@ -67,6 +67,12 @@ def research_creator(profile: CreatorProfile | None, force: bool = False) -> str
         profile.research_notes = summary
         return summary
 
+    # --- Deep fetches on their own channels (primary signal) ---
+    yt_dossier = _youtube_dossier(yt) if yt else {}
+    ig_dossier = _instagram_dossier(handle, ig) if (handle or ig) else {}
+    li_dossier = _linkedin_dossier(li) if li else {}
+    other_dossier = _other_links_dossier(other_urls) if other_urls else {}
+
     # Link-scoped search only (site: / exact URL) — never bare name/niche Google
     queries: list[str] = []
     if handle:
@@ -78,15 +84,18 @@ def research_creator(profile: CreatorProfile | None, force: bool = False) -> str
         yt_path = _yt_channel_hint(yt)
         if yt_path:
             queries.append(f"site:youtube.com {yt_path}")
+            queries.append(f"site:youtube.com {yt_path} review OR haul OR routine OR collab")
         queries.append(f'"{_normalize_url(yt)}"')
     if li:
         queries.append(f'"{_normalize_url(li)}"')
-        queries.append(f"site:linkedin.com {_linkedin_path(li)}")
+        path = _linkedin_path(li)
+        if path:
+            queries.append(f"site:linkedin.com/{path}")
     for u in other_urls[:3]:
         queries.append(f'"{_normalize_url(u)}"')
 
     all_hits: list[dict[str, str]] = []
-    for q in queries[:6]:
+    for q in queries[:8]:
         if not q.strip():
             continue
         all_hits.extend(web_search(q, max_results=5))
@@ -96,19 +105,28 @@ def research_creator(profile: CreatorProfile | None, force: bool = False) -> str
         [u for u in [ig and _instagram_canonical(handle, ig), yt, li, *other_urls] if u]
     )
     hits = _filter_creator_hits(_real_hits(all_hits), allowed, handle)
-    summary = _creator_summary_from_links(profile, handle, hits, page_notes)
+    summary = _creator_summary_from_links(
+        profile,
+        handle,
+        hits,
+        page_notes,
+        yt_dossier=yt_dossier,
+        ig_dossier=ig_dossier,
+        li_dossier=li_dossier,
+        other_dossier=other_dossier,
+    )
 
     polished = generate_text(
         system=(
-            "Rewrite this creator profile research into 3-5 clear sentences for an influencer manager. "
-            "ONLY use facts from the linked Instagram/YouTube/LinkedIn/other pages provided. "
+            "Rewrite this creator profile research into 4-7 clear sentences for an influencer manager. "
+            "ONLY use facts from the linked Instagram/YouTube/LinkedIn/other pages and listed videos. "
+            "Call out content themes if video titles suggest them. "
             "Do not invent other creators or AI influencers. Plain English. No invented follower counts."
         ),
         user=summary,
         fallback=summary,
     )
     if polished and "search_error" not in polished.lower() and len(polished) > 40:
-        # Reject polish that invents unrelated entities (common with name collisions)
         if not _polish_drifts_off_links(polished, handle, ig, yt, li):
             summary = polished.strip()
 
@@ -129,13 +147,15 @@ def research_brand(company: Company | None, force: bool = False) -> str:
         f'"{name}" influencer marketing OR creator OR UGC OR brand ambassador India',
         f'"{name}" review OR controversy OR backlash India',
         f"{domain} official" if domain else f"{name} official website India",
+        f'"{name}" collab OR "brand ambassador" OR seeding India',
     ]
     hits: list[dict[str, str]] = []
-    for q in queries[:4]:
+    for q in queries[:5]:
         hits.extend(web_search(q, max_results=6))
     hits = _filter_brand_hits(name, domain, _real_hits(hits))
 
-    summary = _brand_summary_from_hits(company, hits)
+    site_notes = _fetch_brand_site(domain) if domain else []
+    summary = _brand_summary_from_hits(company, hits, site_notes=site_notes)
     polished = generate_text(
         system=(
             "Rewrite this brand research into 3-5 clear sentences for an influencer manager in India. "
@@ -221,11 +241,28 @@ def _creator_summary_from_links(
     handle: str,
     hits: list[dict[str, str]],
     page_notes: list[dict[str, str]],
+    yt_dossier: dict | None = None,
+    ig_dossier: dict | None = None,
+    li_dossier: dict | None = None,
+    other_dossier: dict | None = None,
 ) -> str:
+    yt_dossier = yt_dossier or {}
+    ig_dossier = ig_dossier or {}
+    li_dossier = li_dossier or {}
+    other_dossier = other_dossier or {}
+
     niche = profile.niche or "content"
-    audience = " ".join(
-        p for p in [(profile.audience_size or "").strip(), (profile.audience_geo or "India").strip()] if p
-    )
+    audience_bits = [
+        p
+        for p in [
+            (profile.audience_size or "").strip(),
+            (profile.audience_geo or "").strip(),
+            (getattr(profile, "audience_description", "") or "").strip(),
+        ]
+        if p
+    ]
+    audience = " · ".join(audience_bits) if audience_bits else "India"
+
     platforms = []
     if profile.instagram_url:
         platforms.append(f"Instagram (@{handle})" if handle else f"Instagram ({profile.instagram_url})")
@@ -237,41 +274,89 @@ def _creator_summary_from_links(
         platforms.append(u)
 
     parts: list[str] = []
-    parts.append(
-        f"This creator works in {niche}"
-        + (f" for an audience of {audience}" if audience else " for an India audience")
-        + "."
-    )
+    parts.append(f"This creator works in {niche} for an audience of {audience}.")
     if platforms:
-        parts.append("Research is limited to these linked channels only: " + ", ".join(platforms) + ".")
+        parts.append("Research scoped to these linked channels only: " + ", ".join(platforms) + ".")
+
     bio = _polish_fragment(profile.bio or "")
     if bio:
-        parts.append(f"Profile form note (context only, not searched as a name): {bio}")
+        parts.append(f"Bio (from profile form): {bio}")
+    goals = _polish_fragment(getattr(profile, "collab_goals", "") or "")
+    if goals:
+        parts.append(f"Collab goals: {goals}")
+    exclusions = (getattr(profile, "exclusions", "") or "").strip()
+    if exclusions:
+        parts.append(f"Hard no-gos: {exclusions}.")
+
+    # YouTube depth
+    if yt_dossier.get("channel_title") or yt_dossier.get("videos"):
+        parts.append("YouTube channel signals:")
+        if yt_dossier.get("channel_title"):
+            parts.append(f"• Channel: {yt_dossier['channel_title']}")
+        if yt_dossier.get("description"):
+            parts.append(f"• About: {yt_dossier['description'][:220]}")
+        videos = yt_dossier.get("videos") or []
+        if videos:
+            parts.append("• Recent videos:")
+            for title in videos[:8]:
+                parts.append(f"  – {title}")
+        themes = yt_dossier.get("themes") or []
+        if themes:
+            parts.append("• Content themes from titles: " + ", ".join(themes[:6]) + ".")
+
+    # Instagram
+    if ig_dossier.get("title") or ig_dossier.get("description") or ig_dossier.get("posts"):
+        parts.append("Instagram signals:")
+        if ig_dossier.get("title"):
+            parts.append(f"• Profile title: {ig_dossier['title']}")
+        if ig_dossier.get("description"):
+            parts.append(f"• Public blurb: {ig_dossier['description'][:200]}")
+        for p in (ig_dossier.get("posts") or [])[:5]:
+            parts.append(f"• Indexed post/reel: {p}")
+        if ig_dossier.get("note"):
+            parts.append(f"• {ig_dossier['note']}")
+
+    # LinkedIn
+    if li_dossier.get("title") or li_dossier.get("description"):
+        parts.append("LinkedIn signals:")
+        if li_dossier.get("title"):
+            parts.append(f"• {li_dossier['title']}")
+        if li_dossier.get("description"):
+            parts.append(f"• {li_dossier['description'][:200]}")
+
+    # Link-in-bio / other
+    if other_dossier.get("links") or other_dossier.get("blurb"):
+        parts.append("From other linked pages (Linktree / site):")
+        if other_dossier.get("blurb"):
+            parts.append(f"• {other_dossier['blurb'][:200]}")
+        for link in (other_dossier.get("links") or [])[:6]:
+            parts.append(f"• Outbound: {link}")
 
     if page_notes:
-        parts.append("From their linked pages:")
-        for p in page_notes[:5]:
+        parts.append("Linked page titles / meta:")
+        for p in page_notes[:4]:
             title = (p.get("title") or "").strip()
-            snippet = (p.get("body") or "").strip()[:160]
-            href = p.get("href") or ""
-            line = f"• {title or href}"
+            snippet = (p.get("body") or "").strip()[:140]
+            line = f"• {title or p.get('href', '')}"
             if snippet:
                 line += f" — {snippet}"
             parts.append(line)
 
     if hits:
-        parts.append("Indexed posts/pages that match their handles:")
-        for h in hits[:5]:
-            snippet = (h.get("body") or "")[:140]
-            parts.append(f"• {h['title']}" + (f" — {snippet}" if snippet else ""))
-    elif not page_notes:
+        # Prefer channel dossiers; keep indexed hits short (DDG often mashes titles)
+        parts.append("Indexed pages matching their handles:")
+        for h in hits[:3 if (yt_dossier.get("videos") or ig_dossier.get("posts")) else 5]:
+            title = re.split(r"(?<=- YouTube)", (h.get("title") or ""), maxsplit=1)[0].strip()
+            title = re.sub(r"\s+", " ", title)[:120]
+            if not title:
+                continue
+            snippet = (h.get("body") or "")[:100]
+            parts.append(f"• {title}" + (f" — {snippet}" if snippet else ""))
+    elif not (yt_dossier or ig_dossier or li_dossier or page_notes):
         parts.append(
-            "Could not pull public snippets from these links yet (pages may be private or blocked). "
-            "Brand suggestions will still use the niche, audience, and links you entered — "
-            "not other people with similar names."
+            "Could not pull rich public snippets from these links yet (pages may be private or blocked). "
+            "Suggestions still use the niche, audience, and links you entered."
         )
-    else:
-        parts.append("No extra indexed posts beyond the linked page titles above.")
 
     parts.append(
         "Note: Bizfluence does not Google the creator's display name, to avoid mixing them up "
@@ -386,6 +471,295 @@ def _filter_creator_hits(
     return kept
 
 
+def _extract_youtube_channel_id(html: str) -> str:
+    """Channel-owned UC id only — never recommended-video channelIds."""
+    for pattern in (
+        # Official channel package (rssUrl / externalId live deep in the page JSON)
+        r'"rssUrl"\s*:\s*"https://www\.youtube\.com/feeds/videos\.xml\?channel_id=(UC[\w-]{22})"',
+        r'"externalId"\s*:\s*"(UC[\w-]{22})"',
+        r'<link[^>]+href="https://www\.youtube\.com/feeds/videos\.xml\?channel_id=(UC[\w-]{22})"',
+        r'itemprop="channelId"\s+content="(UC[\w-]{22})"',
+        r'"browseId"\s*:\s*"(UC[\w-]{22})"',
+    ):
+        m = re.search(pattern, html, re.I)
+        if m:
+            return m.group(1)
+    return ""
+
+
+def _youtube_dossier(yt_url: str) -> dict[str, Any]:
+    """Pull channel meta + recent video titles via public YouTube RSS (no API key)."""
+    out: dict[str, Any] = {"videos": [], "themes": []}
+    try:
+        import httpx
+    except ImportError:
+        return out
+
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        )
+    }
+    url = _normalize_url(yt_url)
+    handle = ""
+    hm = re.search(r"youtube\.com/@([A-Za-z0-9._-]+)", url)
+    if hm:
+        handle = hm.group(1)
+    channel_id = ""
+    m = re.search(r"youtube\.com/channel/(UC[\w-]{22})", url)
+    if m:
+        channel_id = m.group(1)
+
+    try:
+        with httpx.Client(timeout=18.0, follow_redirects=True, headers=headers) as client:
+            html = ""
+            if not channel_id or handle:
+                r = client.get(url if "youtube.com" in url else f"https://www.youtube.com/@{handle}")
+                if r.status_code < 400:
+                    # channelMetadataRenderer / rssUrl sit ~2MB down the page — do not truncate
+                    html = r.text
+            if html:
+                head = html[:80_000]
+                tm = re.search(r"<title[^>]*>(.*?)</title>", head, re.I | re.S)
+                if tm:
+                    out["channel_title"] = (
+                        re.sub(r"\s+", " ", tm.group(1)).replace("- YouTube", "").strip()
+                    )
+                if not out.get("channel_title"):
+                    ctm = re.search(
+                        r'"channelMetadataRenderer"\s*:\s*\{\s*"title"\s*:\s*"((?:\\.|[^"\\])+)"',
+                        html,
+                    )
+                    if ctm:
+                        out["channel_title"] = (
+                            bytes(ctm.group(1), "utf-8")
+                            .decode("unicode_escape", errors="ignore")
+                            .strip()
+                        )
+                dm = re.search(
+                    r'<meta[^>]+(?:name|property)=["\'](?:description|og:description)["\'][^>]+content=["\']([^"\']+)',
+                    head,
+                    re.I,
+                )
+                if dm:
+                    out["description"] = re.sub(r"\s+", " ", dm.group(1)).strip()[:400]
+                else:
+                    # channelMetadataRenderer description (JSON-escaped)
+                    jm = re.search(
+                        r'"channelMetadataRenderer"\s*:\s*\{[^{}]{0,200}?"description"\s*:\s*"((?:\\.|[^"\\]){20,800})"',
+                        html,
+                    )
+                    if jm:
+                        desc = bytes(jm.group(1), "utf-8").decode("unicode_escape", errors="ignore")
+                        out["description"] = re.sub(r"\s+", " ", desc).strip()[:400]
+
+                if not channel_id:
+                    channel_id = _extract_youtube_channel_id(html)
+
+            if channel_id:
+                out["channel_id"] = channel_id
+                fr = client.get(
+                    f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
+                )
+                if fr.status_code < 400:
+                    xml = fr.text
+                    titles = re.findall(r"<media:title[^>]*>(.*?)</media:title>", xml)
+                    if not titles:
+                        titles = re.findall(r"<title>(.*?)</title>", xml)[1:]
+                    cleaned = []
+                    channel_title_l = (out.get("channel_title") or "").lower()
+                    for t in titles:
+                        t = re.sub(r"<[^>]+>", "", t)
+                        t = (
+                            t.replace("&amp;", "&")
+                            .replace("&quot;", '"')
+                            .replace("&#39;", "'")
+                            .strip()
+                        )
+                        if not t or t.lower() == channel_title_l:
+                            continue
+                        if t.lower() in {"youtube", "home", "videos"}:
+                            continue
+                        cleaned.append(t)
+                    if cleaned:
+                        out["videos"] = cleaned[:10]
+                        out["themes"] = _themes_from_titles(cleaned)
+
+            # Fallback: indexed uploads for this @handle only (still link-scoped)
+            if handle and len(out.get("videos") or []) < 3:
+                hits = _real_hits(
+                    web_search(f"site:youtube.com/@{handle}", max_results=8)
+                )
+                extra = []
+                for h in hits:
+                    href = (h.get("href") or "").lower()
+                    title = (h.get("title") or "").replace(" - YouTube", "").strip()
+                    if "youtube.com" not in href or not title:
+                        continue
+                    if title.lower() in {"youtube", handle.lower(), f"@{handle.lower()}"}:
+                        continue
+                    if f"/@{handle.lower()}" in href or "/watch" in href or "/shorts/" in href:
+                        extra.append(title)
+                if extra:
+                    seen = set(out.get("videos") or [])
+                    for t in extra:
+                        if t not in seen:
+                            (out.setdefault("videos", [])).append(t)
+                            seen.add(t)
+                    out["videos"] = (out.get("videos") or [])[:10]
+                    out["themes"] = _themes_from_titles(out["videos"])
+    except Exception:  # noqa: BLE001
+        pass
+    return out
+
+
+def _instagram_dossier(handle: str, ig_url: str) -> dict[str, Any]:
+    """Best-effort IG public signals (login walls are common)."""
+    out: dict[str, Any] = {"posts": []}
+    canonical = _instagram_canonical(handle, ig_url)
+    pages = _fetch_profile_pages([canonical])
+    if pages:
+        out["title"] = pages[0].get("title") or ""
+        out["description"] = pages[0].get("body") or ""
+        if "login" in (out["title"] + out["description"]).lower() or not out["description"]:
+            out["note"] = (
+                "Instagram often hides the full profile behind a login wall; "
+                "using indexed public posts when available."
+            )
+    if handle:
+        hits = _real_hits(web_search(f"site:instagram.com/{handle} reel OR post", max_results=8))
+        for h in hits[:6]:
+            href = (h.get("href") or "").lower()
+            if f"instagram.com/{handle.lower()}" in href:
+                title = (h.get("title") or "").strip()
+                if title:
+                    out["posts"].append(title[:120])
+    return out
+
+
+def _linkedin_dossier(li_url: str) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    pages = _fetch_profile_pages([li_url])
+    if pages:
+        out["title"] = pages[0].get("title") or ""
+        out["description"] = pages[0].get("body") or ""
+    path = _linkedin_path(li_url)
+    if path:
+        hits = _real_hits(web_search(f"site:linkedin.com/{path}", max_results=4))
+        if hits and not out.get("description"):
+            out["description"] = (hits[0].get("body") or "")[:200]
+            if not out.get("title"):
+                out["title"] = hits[0].get("title") or ""
+    return out
+
+
+def _other_links_dossier(urls: list[str]) -> dict[str, Any]:
+    """Parse Linktree / Beacons / personal sites for bio text and outbound links."""
+    out: dict[str, Any] = {"links": [], "blurb": ""}
+    try:
+        import httpx
+    except ImportError:
+        return out
+
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        )
+    }
+    found: list[str] = []
+    blurbs: list[str] = []
+    with httpx.Client(timeout=8.0, follow_redirects=True, headers=headers) as client:
+        for url in urls[:4]:
+            try:
+                r = client.get(_normalize_url(url))
+                if r.status_code >= 400:
+                    continue
+                html = r.text[:120_000]
+                dm = re.search(
+                    r'<meta[^>]+(?:name|property)=["\'](?:description|og:description)["\'][^>]+content=["\']([^"\']+)',
+                    html,
+                    re.I,
+                )
+                if dm:
+                    blurbs.append(re.sub(r"\s+", " ", dm.group(1)).strip())
+                # Collect obvious outbound http links (skip trackers)
+                for href in re.findall(r'href=["\'](https?://[^"\']+)["\']', html, re.I):
+                    low = href.lower()
+                    if any(
+                        skip in low
+                        for skip in (
+                            "facebook.com",
+                            "twitter.com",
+                            "x.com",
+                            "tiktok.com",
+                            "googleapis",
+                            "gstatic",
+                            "schema.org",
+                            "w3.org",
+                            "linktr.ee/s/",
+                        )
+                    ):
+                        # still keep socials that are useful
+                        if any(s in low for s in ("instagram.com", "youtube.com", "youtu.be", "linkedin.com")):
+                            found.append(href.split("?")[0])
+                        continue
+                    if "linktr.ee" in low or "beacons.ai" in low or "bio.site" in low:
+                        continue
+                    found.append(href.split("?")[0])
+            except Exception:  # noqa: BLE001
+                continue
+    # dedupe
+    seen: set[str] = set()
+    for link in found:
+        if link not in seen:
+            seen.add(link)
+            out["links"].append(link)
+        if len(out["links"]) >= 8:
+            break
+    if blurbs:
+        out["blurb"] = blurbs[0]
+    return out
+
+
+def _themes_from_titles(titles: list[str]) -> list[str]:
+    """Offline theme guess from repeated words in video titles."""
+    stop = {
+        "the", "a", "an", "and", "or", "to", "for", "of", "in", "on", "with", "my", "your",
+        "how", "i", "me", "we", "you", "is", "at", "this", "that", "from", "vs", "ep", "part",
+        "full", "video", "official", "new", "best", "top", "india", "hindi", "day", "vlog",
+    }
+    counts: dict[str, int] = {}
+    for title in titles:
+        words = re.findall(r"[A-Za-z]{4,}", title.lower())
+        for w in words:
+            if w in stop:
+                continue
+            counts[w] = counts.get(w, 0) + 1
+    ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    return [w for w, n in ranked if n >= 2][:6] or [w for w, _ in ranked[:4]]
+
+
+def _fetch_brand_site(domain: str) -> list[dict[str, str]]:
+    if not domain:
+        return []
+    host = _clean_domain(domain)
+    return _fetch_profile_pages([f"https://{host}", f"https://www.{host}"])
+
+
+def _unescape_html(text: str) -> str:
+    return (
+        (text or "")
+        .replace("&amp;", "&")
+        .replace("&quot;", '"')
+        .replace("&#39;", "'")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&nbsp;", " ")
+    )
+
+
 def _fetch_profile_pages(urls: list[str]) -> list[dict[str, str]]:
     """Best-effort GET of creator's own URLs for title/meta text (no name Google)."""
     notes: list[dict[str, str]] = []
@@ -396,42 +770,49 @@ def _fetch_profile_pages(urls: list[str]) -> list[dict[str, str]]:
 
     headers = {
         "User-Agent": (
-            "Mozilla/5.0 (compatible; BizfluenceResearch/1.0; +https://bizfluence.local) "
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
             "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         )
     }
-    with httpx.Client(timeout=8.0, follow_redirects=True, headers=headers) as client:
-        for url in urls[:5]:
+    seen_hosts: set[str] = set()
+    with httpx.Client(timeout=10.0, follow_redirects=True, headers=headers) as client:
+        for url in urls[:6]:
+            nu = _normalize_url(url)
+            host = re.sub(r"^https?://(?:www\.)?", "", nu).split("/")[0]
+            if host in seen_hosts and "youtube" not in host:
+                continue
+            seen_hosts.add(host)
             try:
-                r = client.get(_normalize_url(url))
+                r = client.get(nu)
                 if r.status_code >= 400:
                     notes.append(
                         {
                             "title": f"Linked page ({r.status_code})",
                             "href": str(r.url),
-                            "body": "Page did not return public HTML (common for Instagram login walls).",
+                            "body": "Page did not return public HTML (common for Instagram/LinkedIn login walls).",
                         }
                     )
                     continue
-                html = r.text[:80_000]
+                html = r.text[:100_000]
                 title = ""
                 m = re.search(r"<title[^>]*>(.*?)</title>", html, re.I | re.S)
                 if m:
-                    title = re.sub(r"\s+", " ", m.group(1)).strip()
+                    title = _unescape_html(re.sub(r"\s+", " ", m.group(1)).strip())
                 desc = ""
-                m = re.search(
-                    r'<meta[^>]+(?:name|property)=["\'](?:description|og:description)["\'][^>]+content=["\']([^"\']+)',
-                    html,
-                    re.I,
-                )
-                if not m:
-                    m = re.search(
-                        r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+(?:name|property)=["\'](?:description|og:description)["\']',
-                        html,
-                        re.I,
-                    )
-                if m:
-                    desc = re.sub(r"\s+", " ", m.group(1)).strip()
+                for pattern in (
+                    r'<meta[^>]+(?:name|property)=["\'](?:description|og:description|og:title)["\'][^>]+content=["\']([^"\']+)',
+                    r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+(?:name|property)=["\'](?:description|og:description)["\']',
+                ):
+                    m = re.search(pattern, html, re.I)
+                    if m:
+                        desc = _unescape_html(re.sub(r"\s+", " ", m.group(1)).strip())
+                        break
+                # Lightweight about/h1 sniff for brand sites
+                if not desc:
+                    h1 = re.search(r"<h1[^>]*>(.*?)</h1>", html, re.I | re.S)
+                    if h1:
+                        desc = re.sub(r"<[^>]+>", "", h1.group(1))
+                        desc = _unescape_html(re.sub(r"\s+", " ", desc).strip())[:180]
                 notes.append({"title": title or str(r.url), "href": str(r.url), "body": desc})
             except Exception as exc:  # noqa: BLE001
                 notes.append(
@@ -461,35 +842,57 @@ def _polish_drifts_off_links(text: str, handle: str, ig: str, yt: str, li: str) 
     return False
 
 
-def _brand_summary_from_hits(company: Company, hits: list[dict[str, str]]) -> str:
+def _brand_summary_from_hits(
+    company: Company, hits: list[dict[str, str]], site_notes: list[dict[str, str]] | None = None
+) -> str:
     name = company.name
     domain = company.domain or "unknown site"
-    category = company.category or "consumer"
+    category = getattr(company, "category", None) or "consumer"
     parts: list[str] = [
         f"{name} ({domain}) is listed as an India-market {category} brand."
     ]
-    if company.fit_rationale:
+    if getattr(company, "fit_rationale", None):
         parts.append(_polish_fragment(company.fit_rationale))
+
+    if site_notes:
+        parts.append("From their website:")
+        for p in site_notes[:2]:
+            title = (p.get("title") or "").strip()
+            body = (p.get("body") or "").strip()[:180]
+            if title:
+                parts.append(f"• {title}")
+            if body:
+                parts.append(f"• {body}")
 
     influencer_hits = [
         h
         for h in hits
-        if re.search(r"influencer|creator|ugc|ambassador|collab|campaign", f"{h.get('title','')} {h.get('body','')}", re.I)
+        if (h.get("title") or "").strip()
+        and re.search(
+            r"influencer|creator|ugc|ambassador|collab|campaign|seeding",
+            f"{h.get('title','')} {h.get('body','')}",
+            re.I,
+        )
     ]
     risk_hits = [
         h
         for h in hits
-        if re.search(r"controvers|backlash|scam|complaint|boycott|lawsuit", f"{h.get('title','')} {h.get('body','')}", re.I)
+        if (h.get("title") or "").strip()
+        and re.search(
+            r"controvers|backlash|scam|complaint|boycott|lawsuit",
+            f"{h.get('title','')} {h.get('body','')}",
+            re.I,
+        )
     ]
 
     if influencer_hits:
         parts.append("Creator-marketing signals found online:")
-        for h in influencer_hits[:3]:
+        for h in influencer_hits[:4]:
             parts.append(f"• {h['title']}")
     else:
         parts.append(
             "This search did not clearly show recent influencer campaigns. "
-            "That does not mean they never work with creators — it means you should ask them about their current program."
+            "Ask them about their current creator program."
         )
 
     if risk_hits:

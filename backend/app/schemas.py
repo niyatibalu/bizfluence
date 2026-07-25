@@ -127,6 +127,12 @@ class ContactOut(ContactCreate):
     model_config = {"from_attributes": True}
 
 
+class ContactFindResult(BaseModel):
+    contacts: list[ContactOut]
+    message: str
+    source: str = ""  # hunter_people | hunter_generic | hunter_empty | …
+
+
 class EmailGuessRequest(BaseModel):
     first_name: str
     last_name: str
