@@ -1,9 +1,16 @@
 import axios from "axios";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api";
+function apiBase(): string {
+  if (process.env.NEXT_PUBLIC_API_URL) return process.env.NEXT_PUBLIC_API_URL;
+  // Production fallback when the env var wasn't baked into the build
+  if (typeof window !== "undefined" && window.location.hostname.endsWith("vercel.app")) {
+    return "https://bizfluence-api.onrender.com/api";
+  }
+  return "http://localhost:8000/api";
+}
 
 export const api = axios.create({
-  baseURL: API_BASE,
+  baseURL: apiBase(),
 });
 
 api.interceptors.request.use((config) => {
